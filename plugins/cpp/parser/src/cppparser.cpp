@@ -312,7 +312,9 @@ int CppParser::parseWorker(const clang::tooling::CompileCommand& command_)
 
   if (!compilationDb)
   {
-    LOG(error) << "Failed to create compilation database from command-line. " << compilationDbLoadError;
+    LOG(error)
+      << "Failed to create compilation database from command-line. "
+      << compilationDbLoadError;
     return 1;
   }
 
@@ -343,144 +345,34 @@ std::vector<std::string> CppParser::getDependentParsers() const
   return std::vector<std::string>{};
 }
 
-std::vector<std::vector<std::string>> CppParser::createCleanupOrder()
-{
-  typedef boost::adjacency_list<boost::vecS, boost::vecS,
-    boost::bidirectionalS> Graph;
-  typedef boost::adjacency_list<>::vertex_descriptor Vertex;
-  typedef std::pair<int, int> Edge;
-
-  Graph g;
-  std::vector<Edge> edges;
-  std::map<std::string, Vertex> fileNameToVertex;
-  std::deque<std::pair<std::string, Vertex>> deleteQueue;
-
-  for(const auto& file : _ctx.fileStatus)
-  {
-    fileNameToVertex[file.first] = boost::add_vertex(g);
-  }
-
-  try
-  {
-    util::OdbTransaction{_ctx.db}([&]
-    {
-      for (const auto& item : _ctx.fileStatus)
-      {
-        auto file = _ctx.srcMgr.getFile(item.first);
-
-        auto inclusions = _ctx.db->query<model::CppHeaderInclusion>(
-          odb::query<model::CppHeaderInclusion>::included == file->id);
-
-        for (const auto& inclusion : inclusions)
-        {
-          bool inserted;
-          model::FilePtr includer = inclusion.includer.load();
-          boost::graph_traits<Graph>::edge_descriptor e;
-          boost::tie(e, inserted) = boost::add_edge(
-            fileNameToVertex.at(includer->path),
-            fileNameToVertex.at(file->path), g);
-        }
-      }
-    });
-  }
-  catch (odb::database_exception&)
-  {
-    LOG(fatal) << "[cppparser] Topological ordering failed!";
-    return std::vector<std::vector<std::string>>();
-  }
-
-  if (fileNameToVertex.empty())
-  {
-    LOG(info) << "[cppparser] No changed files to create topological order!";
-    return std::vector<std::vector<std::string>>();
-  }
-
-  std::vector<std::vector<std::string>> order;
-  std::size_t index = 0;
-  while (!fileNameToVertex.empty())
-  {
-    order.resize(order.size() + 1);
-
-    for (const auto& item : fileNameToVertex)
-    {
-      if (boost::in_degree(item.second, g) == 0)
-      {
-        order[index].push_back(item.first);
-      }
-    }
-
-    for (const std::string& path : order[index])
-    {
-      boost::clear_out_edges(fileNameToVertex[path], g);
-      fileNameToVertex.erase(path);
-    }
-
-    ++index;
-  }
-  LOG(debug) << "[cppparser] Topology has " << index << " levels.";
-
-  return order;
-}
-
 void CppParser::markModifiedFiles()
 {
   std::vector<model::FilePtr> filePtrs(_ctx.fileStatus.size());
 
-  std::transform(_ctx.fileStatus.begin(),
-                 _ctx.fileStatus.end(),
-                 filePtrs.begin(),
-                 [this](const auto& item)
-                 {
-                   if (item.second == IncrementalStatus::MODIFIED ||
-                       item.second == IncrementalStatus::DELETED)
-                   {
-                     return _ctx.srcMgr.getFile(item.first);
-                   }
-                   else
-                   {
-                     return std::make_shared<model::File>();
-                   }
-                 });
+  for (const auto& status : _ctx.fileStatus)
+    if (status.second == IncrementalStatus::MODIFIED ||
+        status.second == IncrementalStatus::DELETED)
+      filePtrs.push_back(_ctx.srcMgr.getFile(status.first));
 
   // Detect changed files through C++ header inclusions.
   util::OdbTransaction {_ctx.db} ([&]
   {
     for (const model::FilePtr file : filePtrs)
-    {
-      if(file)
-      {
+      if (file)
         markByInclusion(file);
-      }
-    }
   }); // end of transaction
 }
 
 bool CppParser::cleanupDatabase()
 {
-  // Construct the topological order of the files.
-  // Each subvector is layer of leaves.
-
-  std::vector<std::vector<std::string>> topologicallyOrderedFiles =
-    createCleanupOrder();
-
-  // Calculate the complete number of cleanup jobs.
-
   int threadNum = _ctx.options["jobs"].as<int>();
-  int numCleanupJobs = std::accumulate(
-    topologicallyOrderedFiles.begin(),
-    topologicallyOrderedFiles.end(),
-    0,
-    [](int sum, const auto& level)
-    {
-      return sum + level.size();
-    }
-  );
   bool allJobsSucceded = true;
 
   // Define the cleanup action for a single file.
 
-  auto cleanupCommand = [this, &numCleanupJobs, &allJobsSucceded](CleanupJob& job_)
+  auto cleanupCommand = [this, &allJobsSucceded](CleanupJob& job_)
   {
+    std::size_t numCleanupJobs = _ctx.fileStatus.size();
 
     LOG(info)
       << "[cppparser] "
@@ -504,28 +396,17 @@ bool CppParser::cleanupDatabase()
         << " Database cleanup for " << job_.path << " has succeeded.";
   };
 
-  // Process all the layers of the graph.
-  // The elements of a single layer can be cleaned up parallely.
+  std::unique_ptr<util::JobQueueThreadPool<CleanupJob>> pool =
+    util::make_thread_pool<CleanupJob>(threadNum, cleanupCommand);
 
-  int levelIndex = 0;
   std::size_t jobIndex = 0;
-  for (const auto& level : topologicallyOrderedFiles)
+  for (const auto& status : _ctx.fileStatus)
   {
-    std::unique_ptr<util::JobQueueThreadPool<CleanupJob>> pool =
-      util::make_thread_pool<CleanupJob>(threadNum, cleanupCommand);
-
-    LOG(debug) << "[cppparser] Started cleanup level: " << ++levelIndex;
-    for (const std::string& filePath : level)
-    {
-      CleanupJob job(filePath, ++jobIndex);
-      pool->enqueue(job);
-    }
-
-    pool->wait();
-    LOG(debug)
-      << "[cppparser] Finished cleanup level: " << levelIndex
-      << " (" << jobIndex << " jobs)";
+    CleanupJob job(status.first, ++jobIndex);
+    pool->enqueue(job);
   }
+
+  pool->wait();
 
   return allJobsSucceded;
 }
@@ -554,7 +435,8 @@ bool CppParser::cleanupWorker(const std::string& path_)
             for (const model::CppAstNode& astNode : defCppAstNodes)
             {
               // Delete CppEntity
-              _ctx.db->erase_query<model::CppEntity>(odb::query<model::CppEntity>::astNodeId == astNode.id);
+              _ctx.db->erase_query<model::CppEntity>(
+                odb::query<model::CppEntity>::astNodeId == astNode.id);
 
               if (astNode.astType == model::CppAstNode::AstType::Definition)
               {
@@ -577,7 +459,8 @@ bool CppParser::cleanupWorker(const std::string& path_)
             }
 
             // Delete CppEdge (connected to File)
-            _ctx.db->erase_query<model::CppEdge>(odb::query<model::CppEdge>::from == delFile->id);
+            _ctx.db->erase_query<model::CppEdge>(
+              odb::query<model::CppEdge>::from == delFile->id);
 
             break;
           }
@@ -644,7 +527,7 @@ void CppParser::markByInclusion(model::FilePtr file_)
   for (auto inc : inclusions)
   {
     model::FilePtr loaded = inc.includer.load();
-    if(!_ctx.fileStatus.count(loaded->path))
+    if (!_ctx.fileStatus.count(loaded->path))
     {
       _ctx.fileStatus.emplace(loaded->path, IncrementalStatus::MODIFIED);
       LOG(debug) << "[cppparser] File modified: " << loaded->path;

@@ -109,7 +109,6 @@ private:
   
   void initBuildActions();
   void markByInclusion(model::FilePtr file_);
-  std::vector<std::vector<std::string>> createCleanupOrder();
   bool cleanupWorker(const std::string& path_);
 
   std::unordered_set<std::uint64_t> _parsedCommandHashes;
