@@ -372,24 +372,25 @@ public:
 
     //--- CppType ---//
 
-    if (!rd_->isThisDeclarationADefinition())
-      return true;
-
     model::CppTypePtr cppType = _typeStack.top();
 
     cppType->astNodeId = astNode->id;
     cppType->mangledNameHash = astNode->mangledNameHash;
     cppType->name = rd_->getNameAsString();
     cppType->qualifiedName = rd_->getQualifiedNameAsString();
+
+    // All information after this point can only be queried for a record
+    // definition. For example crd->isAbstract call segfaults in case of a
+    // declaration: class MyClass;
+    if (!rd_->isThisDeclarationADefinition())
+      return true;
+
     if (const clang::CXXRecordDecl* crd
         = llvm::dyn_cast<clang::CXXRecordDecl>(rd_))
     {
       cppType->isAbstract = crd->isAbstract();
       cppType->isPOD = crd->isPOD();
-    }
 
-    if (clang::CXXRecordDecl* crd = llvm::dyn_cast<clang::CXXRecordDecl>(rd_))
-    {
       //--- CppInheritance ---//
 
       for (auto it = crd->bases_begin(); it != crd->bases_end(); ++it)
