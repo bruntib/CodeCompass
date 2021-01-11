@@ -1,21 +1,20 @@
-#include <string>
-#include <cstdlib>
-#include <algorithm>
-#include <array>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <fstream>
+#include <functional>
 
 #include <boost/filesystem.hpp>
 
+#include <xapian.h>
+
 #include <util/logutil.h>
+#include <util/parserutil.h>
 
 #include <model/file.h>
 #include <model/file-odb.hxx>
 
 #include <parser/sourcemanager.h>
-#include <indexer/indexerprocess.h>
 #include <searchparser/searchparser.h>
+
+#include "ctagsResultParser.h"
 
 namespace cc
 {
@@ -24,209 +23,100 @@ namespace parser
 
 namespace fs = boost::filesystem;
 
-// TODO: These should come from command line arguments.
-std::array<const char*, 15> excludedSuffixes{{
-  ".doc", ".rtf", ".htm", ".html", ".xml", ".cc.d", ".cc.opts", ".bin",
-  ".hhk", ".hhc", ".output", ".output.0", ".output.1",
-  ".Metrics.dat", ".pp"
-}};
-
-SearchParser::SearchParser(ParserContext& ctx_) : AbstractParser(ctx_),
-  _fileMagic(::magic_open(MAGIC_MIME_TYPE | MAGIC_SYMLINK))
+SearchParser::SearchParser(ParserContext& ctx_) : AbstractParser(ctx_)
 {
-  if (!_fileMagic)
-  {
-    LOG(warning) << "Failed to create a libmagic cookie!";
-  }
-  else if (::magic_load(_fileMagic, nullptr) != 0)
-  {
-    LOG(warning)
-      << "magic_load failed! libmagic error: "
-      << ::magic_error(_fileMagic);
+  fs::path searchDbPath =
+    fs::path(ctx_.options["workspace"].as<std::string>()) /
+    ctx_.options["name"].as<std::string>() /
+    std::string("search");
 
-    ::magic_close(_fileMagic);
-    _fileMagic = nullptr;
-  }
-
-  std::string wsDir = ctx_.options["workspace"].as<std::string>();
-  std::string projDir = wsDir + '/' + ctx_.options["name"].as<std::string>();
-  _searchDatabase = projDir + "/search";
-
-  if (_ctx.options.count("search-skip-directory"))
-    for (const std::string& path
-      : _ctx.options["search-skip-directory"].as<std::vector<std::string>>())
-    {
-      _skipDirectories.push_back(fs::canonical(fs::absolute(path)).string());
-    }
-
-  try
-  {
-    //--- Close last instance (if any) ---//
-
-    _indexProcess.reset();
-
-    //--- Open a new process ---//
-
-    _indexProcess.reset(new IndexerProcess(
-      _searchDatabase,
-      ctx_.compassRoot,
-      IndexerProcess::OpenMode::Create));
-  }
-  catch (const IndexerProcess::Failure& ex_)
-  {
-    LOG(error) << "Indexer process failure: " << ex_.what();
-  }
+  _searchDb = Xapian::WritableDatabase(
+    searchDbPath.string(),
+    Xapian::DB_CREATE_OR_OVERWRITE);
 }
 
+// TODO: In the old CodeCompass version there was a postParse() call which made
+// suggestion database.
 bool SearchParser::parse()
 {
-  if (fs::is_directory(_searchDatabase))
-  {
-    fs::remove_all(_searchDatabase);
-    fs::create_directory(_searchDatabase);
-    LOG(info) << "Search database already exists, dropping.";
-  }
-
   for (const std::string& path :
     _ctx.options["input"].as<std::vector<std::string>>())
   {
+    using namespace std::placeholders;
+
     LOG(info) << "Search parse path: " << path;
 
-    try
-    {
-      util::iterateDirectoryRecursive(path, getParserCallback(path));
-    }
-    catch (const std::exception& ex_)
-    {
-      LOG(warning) << "Search parser threw an exception: " << ex_.what();
-    }
-    catch (...)
-    {
-      LOG(warning) << "Search parser failed with unknown exception!";
-    }
+    util::iterateDirectoryRecursive(
+      path,
+      std::bind(&SearchParser::parseFile, this, _1));
   }
-
-  postParse();
 
   return true;
 }
 
-util::DirIterCallback SearchParser::getParserCallback(const std::string& path_)
+bool SearchParser::parseFile(const std::string& file_)
 {
-  if (!_indexProcess)
-  {
-    LOG(warning) << "Indexer process is not available, skip path: " << path_;
-    return [](const std::string&){ return false; };
-  }
+  // TODO: Support --search-skip-directory. This function should return false
+  // on these directories so their content is not iterated at all.
+  // TODO: Do we need libmagic to determine file type? I don't think so,
+  // because non-source files give no result with CTags. Maybe it's useful for
+  // determining language.
+  // TODO: Check read permission.
 
-  return [this](const std::string& currPath_)
-  {
-    if (fs::is_directory(currPath_))
-    {
-      fs::path canonicalPath = fs::canonical(currPath_);
-
-      if (std::find(_skipDirectories.begin(), _skipDirectories.end(),
-            canonicalPath) != _skipDirectories.end())
-      {
-        LOG(info) << "Skipping " << currPath_ << " because it was listed in "
-          "the skipping directory flag of the search parser.";
-        return false;
-      }
-    }
-
-    if (!shouldHandle(currPath_))
-      return true;
-
-    model::FilePtr file = _ctx.srcMgr.getFile(currPath_);
-
-    if (file)
-    {
-      std::string mimeType("text/plain");
-      if (_fileMagic)
-      {
-        const char* mimeStr = ::magic_file(_fileMagic, currPath_.c_str());
-
-        if (mimeStr)
-          mimeType = mimeStr;
-        else
-          LOG(warning)
-            << "Failed to get mime type for file '"
-            << currPath_ << "'. libmagic error: "
-            << ::magic_error(_fileMagic);
-      }
-
-      file->inSearchIndex = true;
-      _ctx.srcMgr.persistFiles();
-      _indexProcess->indexFile(
-        std::to_string(file->id), file->path, mimeType);
-    }
-
+  if (!shouldHandle(file_))
     return true;
-  };
-}
 
-bool SearchParser::shouldHandle(const std::string& path_)
-{
-  //--- The file is not regular. ---//
+  CTags ctags;
+  std::vector<CTags::Tag> tags = ctags.execute(file_);
 
-  if (!fs::is_regular(path_))
-    return false;
+  // TODO: In the old CodeCompass version the file was persisted in the end.
+  // TODO: We should add a new parseStatus: "only in search index". Or is it
+  // too specific? Do we need to indicate the fact that the file is search
+  // indexed?
+  model::FilePtr file = _ctx.srcMgr.getFile(file_);
 
-  //--- The file is excluded by suffix. ---//
+  // File content is not available in case of non-plaintext and non-regular
+  // files. Files without content don't need to be indexed.
+  if (!file->content)
+    return true;
 
-  std::string normPath(path_);
-  std::transform(normPath.begin(), normPath.end(), normPath.begin(), ::tolower);
+  std::ifstream fileStream(file_);
+  std::string fileContent(
+    std::istreambuf_iterator<char>{fileStream},
+    std::istreambuf_iterator<char>{});
+  fileStream.close();
 
-  for (const char* suff : excludedSuffixes)
-  {
-    std::size_t sufflen = ::strlen(suff);
+  Xapian::TermGenerator gen;
+  Xapian::Document doc;
 
-    if (normPath.length() >= sufflen &&
-        normPath.compare(normPath.length() - sufflen, sufflen, suff) == 0)
-    {
-      LOG(info) << "Skipping " << path_;
-      return false;
-    }
-  }
+  doc.set_data(std::to_string(file->id));
+  doc.add_boolean_term(file->path);
 
-  //--- The file is larger than one megabyte. ---//
+  gen.set_document(doc);
+  gen.index_text(fileContent);
 
-  struct stat statbuf;
-  if (::stat(path_.c_str(), &statbuf) == -1)
-    return false;
+  // TODO: Do we need ":" separator?
+  for (const CTags::Tag& tag : tags)
+    gen.index_text(tag.name, 1, std::string(1, tag.kind));
 
-  if (statbuf.st_size > (1024 * 1024))
-    return false;
-
-  //--- The file is not plain text. ---//
-
-  if (!_ctx.srcMgr.isPlainText(path_))
-  {
-    LOG(info) << "Skipping " << path_ << " because it is not plain text.";
-    return false;
-  }
+  _searchDb.add_document(doc);
 
   return true;
 }
 
-void SearchParser::postParse()
+bool SearchParser::shouldHandle(const std::string& file_) const
 {
-  _indexProcess->buildSuggestions();
-  try
-  {
-    // Wait for indexer process to exit.
-    _indexProcess.reset(nullptr);
-  }
-  catch (...)
-  {
-    LOG(warning) << "Unknown exception in endTravarse()!";
-  }
-}
+  // TODO: In the old CodeCompass version there were some skipped extensions:
+  // .doc, .rtf, .html, etc.
+  // TODO: In the old CodeCompass version too large files (i.e. >1M) were not
+  // indexed. I think this restriction is not necessary.
+  // TODO: Non-text files (like binaries) should be excluded.
+  if (!fs::is_regular_file(file_))
+    return false;
+  if (fs::is_directory(file_))
+    return false;
 
-SearchParser::~SearchParser()
-{
-  if (_fileMagic)
-    ::magic_close(_fileMagic);
+  return true;
 }
 
 #pragma clang diagnostic push
@@ -236,12 +126,6 @@ extern "C"
   boost::program_options::options_description getOptions()
   {
     boost::program_options::options_description description("Search Plugin");
-
-    description.add_options()
-      ("search-skip-directory", po::value<std::vector<std::string>>(),
-       "Directories can be skipped during the parse. Here you can list the "
-       "paths of the directories.");
-
     return description;
   }
 
@@ -252,5 +136,5 @@ extern "C"
 }
 #pragma clang diagnostic pop
 
-} // parser
-} // cc
+}
+}

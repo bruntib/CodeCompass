@@ -1,20 +1,14 @@
 #ifndef CC_SERVICE_SEARCHSERVICE_H
 #define CC_SERVICE_SEARCHSERVICE_H
 
-#include <cstdio>
+#include <vector>
 #include <memory>
-#include <functional>
-#include <mutex>
-
-#include <boost/regex.hpp>
-#include <boost/program_options/variables_map.hpp>
 
 #include <odb/database.hxx>
+#include <xapian.h>
+#include <projectservice/projectservice.h>
 #include <webserver/servercontext.h>
-
 #include <SearchService.h>
-
-#include <service/serviceprocess.h>
 
 namespace cc
 {
@@ -23,46 +17,45 @@ namespace service
 namespace search
 {
 
-class SearchServiceHandler : virtual public SearchServiceIf {
+class SearchServiceHandler : virtual public SearchServiceIf
+{
 public:
-
+  // TODO: Server context should contain odb::database and the location of
+  // project directory.
   SearchServiceHandler(
     std::shared_ptr<odb::database> db_,
     std::shared_ptr<std::string> datadir_,
     const cc::webserver::ServerContext& context_);
 
   void search(
-    SearchResult& _return,
+    SearchResult& return_,
     const SearchParams& params_) override;
 
+  // TODO: File search should go through project.thrift.
   void searchFile(
-    FileSearchResult& _return,
-    const SearchParams&     params_) override;
+    FileSearchResult& return_,
+    const SearchParams& params_) override;
 
-  void getSearchTypes(std::vector<SearchType> & _return) override;
+  void getSearchTypes(std::vector<SearchType>& return_) override;
 
   void pleaseStop() override;
 
-  void suggest(SearchSuggestions& _return,
+  void suggest(
+    SearchSuggestions& return_,
     const SearchSuggestionParams& params_) override;
 
 private:
-  /**
-   * Validates a regluar expression. If the expression is invalid then a thrift
-   * excepion is thrown.
-   *
-   * @param regexp_ a regluar expression to validate.
-   */
-  static void validateRegexp(const std::string& regexp_);
+  static std::vector<LineMatch> getMatches(
+    const std::string& fileContent_,
+    const std::string& token_,
+    const core::FileId& fileId_);
 
-  std::shared_ptr<odb::database> _db;
-
-  std::unique_ptr<ServiceProcess> _javaProcess;
-  std::mutex _javaProcessMutex;
+  core::ProjectServiceHandler _projectHandler;
+  Xapian::Database _searchDb;
 };
 
-} // search
-} // service
-} // cc
+}
+}
+}
 
-#endif // CC_SERVICE_SEARCHSERVICE_H
+#endif

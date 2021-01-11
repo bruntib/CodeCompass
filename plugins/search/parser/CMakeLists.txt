@@ -3,18 +3,15 @@ include_directories(
   ${PROJECT_SOURCE_DIR}/model/include
   ${PROJECT_SOURCE_DIR}/util/include
   ${PROJECT_SOURCE_DIR}/parser/include
-  ${CMAKE_BINARY_DIR}/model/include
-  ${PLUGIN_BINARY_DIR}/indexer/gen-cpp
-  ${PLUGIN_DIR}/indexer/include)
+  ${CMAKE_BINARY_DIR}/model/include)
 
-include_directories(SYSTEM
-  ${THRIFT_LIBTHRIFT_INCLUDE_DIRS})
+add_library(searchparser SHARED
+  src/searchparser.cpp
+  src/ctagsResultParser.cpp)
 
-add_library(searchparser SHARED src/searchparser.cpp)
 target_link_libraries(searchparser
   util
-  magic
-  indexerservice)
+  xapian)
 
 target_compile_options(searchparser PUBLIC -Wno-unknown-pragmas)
 

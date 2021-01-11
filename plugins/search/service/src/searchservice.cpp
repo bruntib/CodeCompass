@@ -1,96 +1,8 @@
-#include <limits>
 #include <cctype>
-#include <memory>
-#include <ctime>
-#include <chrono>
-
-#include <boost/filesystem.hpp>
-
-#include <odb/transaction.hxx>
-#include <odb/session.hxx>
-#include <odb/query.hxx>
-
-#include <model/file.h>
-#include <model/file-odb.hxx>
-
-#include <util/logutil.h>
-#include <util/dbutil.h>
-#include <util/odbtransaction.h>
+#include <algorithm>
+#include <sstream>
 
 #include <service/searchservice.h>
-
-namespace fs = boost::filesystem;
-
-namespace
-{
-
-using cc::service::search::SearchServiceHandler;
-
-class FilterHelper
-{
-public:
-  FilterHelper(const cc::service::search::SearchFilter& filters_) :
-    _filters(filters_),
-    _fileFilter(_filters.fileFilter, boost::regex::icase),
-    _dirFilter(_filters.dirFilter, boost::regex::icase)
-  {
-  }
-
-public:
-  bool shouldSkip(const std::string& filePath_) const
-  {
-    fs::path path(filePath_);
-    std::string filename = path.filename().native();
-
-    bool skip = false;
-    if (!skip && !_filters.fileFilter.empty())
-    {
-      skip = shouldSkipByFilter(_fileFilter, filename);
-    }
-
-    if (!skip && !_filters.dirFilter.empty())
-    {
-      skip = shouldSkipByFilter(_dirFilter, filename);
-    }
-
-    return skip;
-  }
-
-private:
-  /**
-   * This method does the filtering.
-   *
-   * @param filter_ the filter regular expression.
-   * @param filePath_ a file path.
-   * @return returns true if we should skip this file according to the filter
-   *         expression.
-   */
-  static bool shouldSkipByFilter(
-      const boost::regex&     filter_,
-      const std::string&      filePath_)
-  {
-    try
-    {
-      return !boost::regex_search(filePath_, filter_);
-    }
-    catch (const boost::regex_error& err)
-    {
-      LOG(warning)
-        << "Search service threw an exception: " << err.what();
-
-      return false;
-    }
-
-    return false;
-  }
-
-private:
-  const cc::service::search::SearchFilter& _filters;
-  boost::regex _fileFilter;
-  boost::regex _dirFilter;
-};
-
-} // anonymous namespace
 
 namespace cc
 {
@@ -102,195 +14,125 @@ namespace search
 SearchServiceHandler::SearchServiceHandler(
   std::shared_ptr<odb::database> db_,
   std::shared_ptr<std::string> datadir_,
-  const cc::webserver::ServerContext& context_) :
-    _db(db_)
+  const cc::webserver::ServerContext& context_)
+    : _projectHandler(db_, datadir_, context_),
+      _searchDb(*datadir_ + "/search", Xapian::DB_OPEN)
 {
-  _javaProcess.reset(new ServiceProcess(*datadir_ + "/search",
-                                        context_.compassRoot));
 }
 
-void SearchServiceHandler::search(
-  SearchResult& _return,
-  const SearchParams& params_)
+std::vector<LineMatch> SearchServiceHandler::getMatches(
+  const std::string& fileContent_,
+  const std::string& token_,
+  const core::FileId& fileId_)
 {
-  std::lock_guard<std::mutex> lock(_javaProcessMutex);
+  // TODO: What if token is found multiple times in a line?
+  std::vector<LineMatch> lineMatches;
 
-  try
+  std::istringstream content(fileContent_);
+  std::string line;
+
+  for (int lineNo = 1; std::getline(content, line); ++lineNo)
   {
-    auto start = std::chrono::steady_clock::now();
+    std::string::const_iterator pos = std::search(
+      line.begin(), line.end(), token_.begin(), token_.end(),
+      [](char c1, char c2) { return std::tolower(c1) == std::tolower(c2); });
 
-    _javaProcess->search(_return, params_);
+    if (pos == line.end())
+      continue;
 
-    auto end = std::chrono::steady_clock::now();
-    auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(end-start);
+    LineMatch match;
 
-    LOG(info) << "Search time: " << dur.count() << " milliseconds.";
+    match.text = line;
+    match.range.file = fileId_;
+
+    match.range.range.startpos.line = lineNo;
+    match.range.range.startpos.column = pos - line.begin() + 1;
+    match.range.range.endpos.line = lineNo;
+    match.range.range.endpos.column
+      = match.range.range.startpos.column + token_.length();
+
+    lineMatches.push_back(match);
   }
-  catch (const ServiceProcess::ProcessDied&)
-  {
-    LOG(error) << "Java search service died! Terminating server...";
-    ::abort();
-  }
+
+  return lineMatches;
 }
 
-void SearchServiceHandler::searchFile(
-    FileSearchResult& _return,
-    const SearchParams&     params_)
+void SearchServiceHandler::getSearchTypes(std::vector<SearchType>& return_)
 {
-  LOG(info) << "Search for file: query = " << params_.query;
+  ::cc::service::search::SearchType type;
 
-  odb::transaction t(_db->begin());
+  type.__set_id(::cc::service::search::SearchOptions::SearchInSource);
+  type.__set_name("Text search");
+  return_.push_back(type);
 
-  typedef odb::result<model::ParentIdCollector> parentIds;
-  typedef odb::result<model::File> fileResult;
-  typedef odb::query<model::File> query;
+  type.__set_id(::cc::service::search::SearchOptions::SearchInDefs);
+  type.__set_name("Definition search");
+  return_.push_back(type);
 
-  validateRegexp(params_.query);
+  type.__set_id(::cc::service::search::SearchOptions::SearchForFileName);
+  type.__set_name("File name search");
+  return_.push_back(type);
 
-  try
-  {
-    FilterHelper filters(params_.filter);
-
-    parentIds parents = _db->query<model::ParentIdCollector>(
-      query::type != model::File::DIRECTORY_TYPE &&
-      query::filename + SQL_REGEX + query::_val(params_.query));
-
-    std::vector<model::FileId> parentVector;
-    for (const auto& parent : parents)
-    {
-      parentVector.push_back(parent.parent);
-    }
-
-    std::size_t minIdx = 0;
-    std::size_t maxIdx = parentVector.size();
-    if (params_.__isset.range)
-    {
-      minIdx = std::min(static_cast<int64_t>(maxIdx), params_.range.start);
-      maxIdx = std::min(static_cast<int64_t>(maxIdx),
-        params_.range.start + params_.range.maxSize);
-    }
-
-    if (minIdx == maxIdx)
-    {
-      // No result
-      _return.totalFiles = 0;
-      return;
-    }
-
-    fileResult r (_db->query<model::File>(
-      query::type != model::File::DIRECTORY_TYPE &&
-      query::filename + SQL_REGEX + query::_val(params_.query) &&
-      query::parent.in_range(parentVector.begin() + minIdx,
-        parentVector.begin() + maxIdx)));
-
-    for (const auto& f : r)
-    {
-      if (filters.shouldSkip(f.path))
-      {
-        continue;
-      }
-
-      core::FileInfo info;
-      info.id = std::to_string(f.id);
-      info.name = f.filename;
-      info.path = f.path;
-
-      _return.results.push_back(info);
-      _return.totalFiles = parentVector.size();
-    }
-  }
-  catch (odb::exception &odbex)
-  {
-    LOG(error)
-      << "Search service search in file exception: " << odbex.what();
-
-    DatasourceError ex;
-    ex.message = odbex.what();
-    throw ex;
-  }
-  catch (const boost::regex_error& err)
-  {
-    LOG(error) << "Regexp error: " << err.what();
-
-    SearchException ex;
-    ex.message  = "Bad regular expression: ";
-    ex.message += err.what();
-    throw ex;
-  }
-}
-
-
-void SearchServiceHandler::getSearchTypes(
-    std::vector<SearchType> & _return)
-{
-  struct {
-    const char* name;
-    uint32_t option;
-  } options[] = {
-    { "Text search",
-      ::cc::service::search::SearchOptions::SearchInSource },
-    { "Definition search",
-      ::cc::service::search::SearchOptions::SearchInDefs },
-    { "File name search",
-      ::cc::service::search::SearchOptions::SearchForFileName },
-    { "Log search",
-      ::cc::service::search::SearchOptions::FindLogText }
-  };
-
-  for (auto t : options)
-  {
-    ::cc::service::search::SearchType type;
-
-    type.id = t.option;
-    type.name = t.name;
-
-    _return.push_back(type);
-  }
+  type.__set_id(::cc::service::search::SearchOptions::FindLogText);
+  type.__set_name("Log search");
+  return_.push_back(type);
 }
 
 void SearchServiceHandler::pleaseStop()
 {
+
 }
 
-void SearchServiceHandler::suggest(SearchSuggestions& _return,
+void SearchServiceHandler::search(
+  SearchResult& return_,
+  const SearchParams& params_)
+{
+  Xapian::QueryParser queryParser;
+  Xapian::Query query = queryParser.parse_query(params_.query);
+  Xapian::Enquire enquire(_searchDb);
+  enquire.set_query(query);
+
+  Xapian::doccount offset = 0, max = 10;
+  if (params_.__isset.range)
+  {
+    offset = params_.range.start;
+    max = params_.range.maxSize;
+  }
+
+  Xapian::MSet result = enquire.get_mset(offset, max);
+  for (Xapian::MSetIterator i = result.begin(), e = result.end(); i != e; ++i)
+  {
+    SearchResultEntry entry;
+
+    _projectHandler.getFileInfo(entry.finfo, i.get_document().get_data());
+
+    std::string fileContent;
+    _projectHandler.getFileContent(fileContent, entry.finfo.id);
+
+    for (Xapian::TermIterator ti = enquire.get_matching_terms_begin(i),
+      tiEnd = enquire.get_matching_terms_end(i); ti != tiEnd; ++ti)
+    {
+      entry.matchingLines = getMatches(fileContent, *ti, entry.finfo.id);
+    }
+
+    return_.results.push_back(entry);
+  }
+
+  return_.totalFiles = 10;
+}
+
+void SearchServiceHandler::searchFile(
+  FileSearchResult& return_,
+  const SearchParams& params_)
+{
+}
+
+void SearchServiceHandler::suggest(
+  SearchSuggestions& return_,
   const SearchSuggestionParams& params_)
 {
-  std::lock_guard<std::mutex> lock(_javaProcessMutex);
-
-  try
-  {
-    auto start = std::chrono::steady_clock::now();
-
-    _javaProcess->suggest(_return, params_);
-
-    auto end = std::chrono::steady_clock::now();
-    auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(end-start);
-
-    LOG(info) << "Suggest time: " << dur.count() << " milliseconds.";
-  }
-  catch (const ServiceProcess::ProcessDied&)
-  {
-    LOG(error) << "Java search service died! Terminating server...";
-    ::abort();
-  }
 }
 
-void SearchServiceHandler::validateRegexp(const std::string& regexp_)
-{
-  try
-  {
-    boost::regex regex(regexp_);
-  }
-  catch (const boost::regex_error& err)
-  {
-    SearchException ex;
-    ex.message  = "Bad regular expression: ";
-    ex.message += err.what();
-    throw ex;
-  }
 }
-
-} // search
-} // service
-} // cc
-
+}
+}

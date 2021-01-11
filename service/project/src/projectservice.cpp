@@ -402,8 +402,8 @@ FileInfo ProjectServiceHandler::makeFileInfo(model::File& f)
       break;
   }
 
-  if (fileInfo.parseStatus == FileParseStatus::Nothing && f.inSearchIndex)
-    fileInfo.__set_parseStatus(FileParseStatus::OnlyInSearchIndex);
+  //if (fileInfo.parseStatus == FileParseStatus::Nothing && f.inSearchIndex)
+  //  fileInfo.__set_parseStatus(FileParseStatus::OnlyInSearchIndex);
 
   return fileInfo;
 }

@@ -158,8 +158,8 @@ function (dom, declare, topic, keys, Memory, _WidgetBase, RadioButton, CheckBox,
         data : that._mimeTypes
       });
 
-      this._mimeComboBox = new ComboBox({ store : mimeTypes }); 
-      
+      this._mimeComboBox = new ComboBox({ store : mimeTypes });
+
       this._langMap.mime = {
         name : this._mimeComboBox,
         mimeTypes : []
@@ -290,7 +290,7 @@ function (dom, declare, topic, keys, Memory, _WidgetBase, RadioButton, CheckBox,
 
       return finalQuery;
     },
-    
+
     /**
      * Updates the search history with the current ComboBox value, then sets
      * a new store for it.
@@ -367,7 +367,7 @@ function (dom, declare, topic, keys, Memory, _WidgetBase, RadioButton, CheckBox,
           // There is an another call in progress so we just drop this result.
           return;
         }
-        
+
         var sstore = new Memory();
         result.results.forEach(function (item) {
           sstore.put({text: item});
@@ -438,7 +438,7 @@ function (dom, declare, topic, keys, Memory, _WidgetBase, RadioButton, CheckBox,
 
       var optionsDiv = dom.create('div');
       advancedTooltip.set('content', optionsDiv);
-      
+
       var langGroup = new Fieldset({
         title   : 'Languages',
         content : dom.create('div'),
@@ -505,7 +505,7 @@ function (dom, declare, topic, keys, Memory, _WidgetBase, RadioButton, CheckBox,
         label    : 'Settings',
         dropDown : advancedTooltip
       });
-      
+
       return advancedSettings;
     },
 
@@ -562,7 +562,7 @@ function (dom, declare, topic, keys, Memory, _WidgetBase, RadioButton, CheckBox,
           } else if (newValue === SearchOptions.FindLogText) {
             that._search.set('placeHolder', that._placeholders.log);
           }
-        
+
           if (newValue === SearchOptions.SearchInSource ||
               newValue === SearchOptions.SearchInDefs){
             advancedSettings.set('disabled', false);
@@ -586,7 +586,8 @@ function (dom, declare, topic, keys, Memory, _WidgetBase, RadioButton, CheckBox,
             that._publishSearch();
           } else if (this.suggestTimer === undefined) {
             this.suggestTimer = window.setTimeout(function () {
-              that._suggestSearchText();
+              // TODO
+              // that._suggestSearchText();
             }, 300);
           }
           return true;
@@ -689,8 +690,8 @@ function (dom, declare, topic, keys, Memory, _WidgetBase, RadioButton, CheckBox,
       var fileFilterHelp = dom.create('span', { class : 'cc-search-help' });
       var dirFilterHelp  = dom.create('span', { class : 'cc-search-help' });
 
-      var searchTooltip     = new Tooltip({ 
-        position: ['below'], 
+      var searchTooltip     = new Tooltip({
+        position: ['below'],
         label : that._searchTooltipLabel
       });
       var fileFilterTooltip = new Tooltip({

@@ -68,8 +68,6 @@ struct File
   #pragma db not_null
   ParseStatus parseStatus = PSNone;
   
-  bool inSearchIndex = false;
-
   std::string toString() const;
 
 #pragma db index member(path)
