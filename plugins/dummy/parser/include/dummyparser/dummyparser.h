@@ -8,17 +8,21 @@ namespace cc
 {
 namespace parser
 {
-  
+
 class DummyParser : public AbstractParser
 {
 public:
   DummyParser(ParserContext& ctx_);
   virtual ~DummyParser();
   virtual bool parse() override;
+
 private:
-  bool accept(const std::string& path_);
+  static bool accept(const std::string& path_);
+  static bool parseToJson(const std::string& path_);
+
+  const std::string _goSourceType;
 };
-  
+
 } // parser
 } // cc
 

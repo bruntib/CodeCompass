@@ -36,7 +36,7 @@ extern "C"
     cc::webserver::registerPluginSimple(
       context_,
       pluginHandler_,
-      CODECOMPASS_SERVICE_FACTORY_WITH_CFG(Dummy, dummy),
+      CODECOMPASS_LANGUAGE_SERVICE_FACTORY_WITH_CFG(Dummy),
       "DummyService");
   }
 }

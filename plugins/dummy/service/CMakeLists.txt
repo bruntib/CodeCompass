@@ -2,7 +2,9 @@ include_directories(
   include
   ${CMAKE_CURRENT_BINARY_DIR}/gen-cpp
   ${PROJECT_SOURCE_DIR}/util/include
-  ${PROJECT_SOURCE_DIR}/webserver/include)
+  ${PROJECT_SOURCE_DIR}/webserver/include
+  ${PROJECT_BINARY_DIR}/service/language/gen-cpp
+  ${PROJECT_BINARY_DIR}/service/project/gen-cpp)
 
 include_directories(SYSTEM
   ${THRIFT_LIBTHRIFT_INCLUDE_DIRS})
@@ -36,6 +38,8 @@ target_link_libraries(dummyservice
   util
   ${THRIFT_LIBTHRIFT_LIBRARIES}
   ${ODB_LIBRARIES}
-  dummythrift)
+  dummythrift
+  projectservice
+  languagethrift)
 
 install(TARGETS dummyservice DESTINATION ${INSTALL_SERVICE_DIR})

@@ -1,5 +1,6 @@
 include_directories(
   include
+  ${PROJECT_BINARY_DIR}/model/include
   ${PROJECT_SOURCE_DIR}/model/include
   ${PROJECT_SOURCE_DIR}/util/include
   ${PROJECT_SOURCE_DIR}/parser/include)

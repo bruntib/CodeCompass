@@ -16,3 +16,4 @@ build_*/
 install/
 install_*/
 
+node_modules

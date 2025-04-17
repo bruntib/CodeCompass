@@ -2,7 +2,9 @@
 
 #include <boost/filesystem.hpp>
 
+#include <parser/sourcemanager.h>
 #include <util/logutil.h>
+#include <util/parserutil.h>
 
 #include <memory>
 
@@ -11,24 +13,48 @@ namespace cc
 namespace parser
 {
 
-DummyParser::DummyParser(ParserContext& ctx_): AbstractParser(ctx_)
+DummyParser::DummyParser(ParserContext& ctx_)
+  : AbstractParser(ctx_),
+    _goSourceType("GO")
 {
 }
 
 bool DummyParser::accept(const std::string& path_)
 {
   std::string ext = boost::filesystem::extension(path_);
-  return ext == ".dummy";
+  return ext == ".go";
+}
+
+bool DummyParser::parseToJson(const std::string& path_)
+{
+  std::string output = path_ + ".json";
+
+  std::string command = "exast";
+  command += ' ' + path_;
+  command += ' ' + output;
+
+  std::system(command.c_str());
+
+  return true;
 }
 
 bool DummyParser::parse()
-{        
-  for(std::string path : _ctx.options["input"].as<std::vector<std::string>>())
+{
+  for (const std::string& path :
+    _ctx.options["input"].as<std::vector<std::string>>())
   {
-    if(accept(path))
-    {
-      LOG(info) << "DummyParser parse path: " << path;
-    }
+    LOG(info) << "DummyParser parse path: " << path;
+    util::iterateDirectoryRecursive(path, [this](const std::string& path) {
+      if (!accept(path))
+        return true;
+
+      model::FilePtr file = _ctx.srcMgr.getFile(path);
+      file->parseStatus = model::File::PSFullyParsed;
+      file->type = this->_goSourceType;
+      _ctx.srcMgr.updateFile(*file);
+
+      return parseToJson(path);
+    });
   }
   return true;
 }

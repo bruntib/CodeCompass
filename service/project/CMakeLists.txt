@@ -13,8 +13,6 @@ include_directories(SYSTEM
 # generated files.
 add_custom_command(
   OUTPUT
-    ${CMAKE_CURRENT_BINARY_DIR}/gen-cpp/common_constants.cpp
-    ${CMAKE_CURRENT_BINARY_DIR}/gen-cpp/common_constants.h
     ${CMAKE_CURRENT_BINARY_DIR}/gen-cpp/common_types.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/gen-cpp/common_types.h
     ${CMAKE_CURRENT_BINARY_DIR}/gen-cpp
