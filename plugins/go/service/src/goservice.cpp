@@ -6,6 +6,7 @@
 #include <util/logutil.h>
 
 #include <service/goservice.h>
+#include "diagram.h"
 
 namespace cc
 {
@@ -182,14 +183,53 @@ void GoServiceHandler::getProperties(std::map<std::string, std::string> & _retur
 
 }
 
-void GoServiceHandler::getDiagramTypes(std::map<std::string, int32_t> & _return, const core::AstNodeId& astNodeId)
+void GoServiceHandler::getDiagramTypes(
+  std::map<std::string, int32_t>& return_,
+  const core::AstNodeId& astNodeId_)
 {
+  std::vector<AstNodeInfo> definitions;
+  getReferences(definitions, astNodeId_, DEFINITION, {});
 
+  core::AstNodeId astNodeId = astNodeId_;
+  if (!definitions.empty())
+    astNodeId = definitions.front().id;
+
+  model::GoAstNode node = queryGoAstNode(astNodeId);
+
+  switch (node.symbolType)
+  {
+    case model::GoAstNode::SymbolType::Function:
+      return_["Function call diagram"] = FUNCTION_CALL;
+      break;
+  }
 }
 
-void GoServiceHandler::getDiagram(std::string& _return, const core::AstNodeId& astNodeId, const int32_t diagramId)
+void GoServiceHandler::getDiagram(
+  std::string& return_,
+  const core::AstNodeId& astNodeId_,
+  const int32_t diagramId_)
 {
+  util::Graph graph = returnDiagram(astNodeId_, diagramId_);
 
+  if (graph.nodeCount() != 0)
+    return_ = graph.output(util::Graph::SVG);
+}
+
+util::Graph GoServiceHandler::returnDiagram(
+  const core::AstNodeId& astNodeId_,
+  const std::int32_t diagramId_)
+{
+  GoDiagram diagram(_db, _datadir, _context);
+  util::Graph graph;
+
+  switch (diagramId_)
+  {
+    case FUNCTION_CALL:
+      diagram.getFunctionCallDiagram(graph, astNodeId_);
+      break;
+  }
+
+  return graph;
 }
 
 void GoServiceHandler::getDiagramLegend(std::string& _return, const int32_t diagramId)
@@ -220,6 +260,15 @@ void GoServiceHandler::getReferenceTypes(
 
   return_["Definition"] = DEFINITION;
   return_["Usage"] = USAGE;
+
+  switch (node.symbolType)
+  {
+    case model::GoAstNode::SymbolType::Function:
+      return_["This calls"] = THIS_CALLS;
+      return_["Callee"] = CALLEE;
+      return_["Caller"] = CALLER;
+      break;
+  }
 }
 
 int32_t GoServiceHandler::getReferenceCount(
@@ -240,6 +289,40 @@ int32_t GoServiceHandler::getReferenceCount(
 
       case USAGE:
         return queryGoAstNodeCount(astNodeId_);
+
+        case THIS_CALLS:
+        return queryCallsCount(astNodeId_);
+
+      case CALLS_OF_THIS:
+        return queryGoAstNodeCount(astNodeId_,
+          AstQuery::symbolType == model::GoAstNode::SymbolType::Reference);
+
+      case CALLEE:
+      {
+        std::int32_t count = 0;
+
+        std::set<std::uint64_t> defHashes;
+        for (const model::GoAstNode& call : queryCalls(astNodeId_))
+        {
+          model::GoAstNode node = queryGoAstNode(std::to_string(call.id));
+          defHashes.insert(node.entityHash);
+        }
+
+        if (!defHashes.empty())
+          count += _db->query_value<model::GoAstCount>(
+            AstQuery::entityHash.in_range(
+              defHashes.begin(), defHashes.end()) &&
+            AstQuery::location.range.end.line != model::Position::npos).count;
+
+        return count;
+      }
+
+      case CALLER:
+      {
+        std::vector<AstNodeInfo> references;
+        getReferences(references, astNodeId_, CALLER, {});
+        return references.size();
+      }
     }
   });
 }
@@ -261,6 +344,58 @@ void GoServiceHandler::getReferences(
 
       case USAGE:
         nodes = queryGoAstNodes(astNodeId_);
+        break;
+
+      case THIS_CALLS:
+        nodes = queryCalls(astNodeId_);
+        break;
+
+      case CALLS_OF_THIS:
+        nodes = queryGoAstNodes(
+          astNodeId_,
+          AstQuery::symbolType == model::GoAstNode::SymbolType::Reference);
+        break;
+
+      case CALLEE:
+        for (const model::GoAstNode& call : queryCalls(astNodeId_))
+        {
+          core::AstNodeId astNodeId = std::to_string(call.id);
+          std::vector<model::GoAstNode> defs = queryDefinitions(astNodeId);
+          nodes.insert(nodes.end(), defs.begin(), defs.end());
+        }
+
+        std::sort(nodes.begin(), nodes.end());
+        nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+
+        break;
+
+      case CALLER:
+        for (const model::GoAstNode& astNode : queryGoAstNodes(
+          astNodeId_,
+          AstQuery::symbolType == model::GoAstNode::SymbolType::Reference))
+        {
+          const model::Position& start = astNode.location.range.start;
+          const model::Position& end   = astNode.location.range.end;
+
+          AstResult result = _db->query<model::GoAstNode>(
+            AstQuery::symbolType == model::GoAstNode::SymbolType::Function &&
+            // Same file
+            AstQuery::location.file == astNode.location.file.object_id() &&
+            // StartPos >= Pos
+            ((AstQuery::location.range.start.line == start.line &&
+              AstQuery::location.range.start.column <= start.column) ||
+             AstQuery::location.range.start.line < start.line) &&
+            // Pos > EndPos
+            ((AstQuery::location.range.end.line == end.line &&
+              AstQuery::location.range.end.column > end.column) ||
+             AstQuery::location.range.end.line > end.line));
+
+          nodes.insert(nodes.end(), result.begin(), result.end());
+        }
+
+        std::sort(nodes.begin(), nodes.end());
+        nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+
         break;
     }
 
@@ -361,6 +496,35 @@ std::size_t GoServiceHandler::queryGoAstNodeCount(
   return q.count;
 }
 
+std::vector<model::GoAstNode> GoServiceHandler::queryCalls(
+  const core::AstNodeId& astNodeId_)
+{
+  std::vector<model::GoAstNode> nodes = queryDefinitions(astNodeId_);
+
+  if (nodes.empty())
+    return nodes;
+
+  model::GoAstNode node = nodes.front();
+  AstResult result = _db->query<model::GoAstNode>(astCallsQuery(node));
+
+  nodes = std::vector<model::GoAstNode>(result.begin(), result.end());
+
+  return nodes;
+}
+
+std::size_t GoServiceHandler::queryCallsCount(
+  const core::AstNodeId& astNodeId_)
+{
+  std::vector<model::GoAstNode> nodes = queryDefinitions(astNodeId_);
+
+  if (nodes.empty())
+    return std::size_t(0);
+
+  model::GoAstNode node = nodes.front();
+
+  return _db->query_value<model::GoAstCount>(astCallsQuery(node)).count;
+}
+
 std::map<model::GoAstNodeId, std::vector<std::string>>
 GoServiceHandler::getTags(const std::vector<model::GoAstNode>& nodes_)
 {
@@ -372,6 +536,25 @@ GoServiceHandler::getTags(const std::vector<model::GoAstNode>& nodes_)
   }
 
   return tags;
+}
+
+odb::query<model::GoAstNode> GoServiceHandler::astCallsQuery(
+  const model::GoAstNode& astNode_)
+{
+  const model::Position& start = astNode_.location.range.start;
+  const model::Position& end = astNode_.location.range.end;
+
+  return (AstQuery::location.file == astNode_.location.file.object_id() &&
+    AstQuery::symbolType == model::GoAstNode::SymbolType::Reference &&
+    AstQuery::defId + "LIKE" + AstQuery::_val("\%Function\%") &&
+    // StartPos >= Pos
+    ((AstQuery::location.range.start.line == start.line &&
+      AstQuery::location.range.start.column >= start.column) ||
+     AstQuery::location.range.start.line > start.line) &&
+    // Pos > EndPos
+    ((AstQuery::location.range.end.line == end.line &&
+      AstQuery::location.range.end.column < end.column) ||
+     AstQuery::location.range.end.line < end.line));
 }
 
 } // language

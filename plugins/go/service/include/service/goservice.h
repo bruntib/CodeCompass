@@ -171,6 +171,13 @@ public:
     UNDEFINITION, /*!< Macro undefinition. */
   };
 
+  enum DiagramType
+  {
+    FUNCTION_CALL, /*!< In the function call diagram the nodes are functions and
+      the edges are the function calls between them. The diagram also displays
+      some dynamic information such as virtual function calls. */
+  };
+
 private:
   std::vector<model::GoAstNode> queryDefinitions(
     const core::AstNodeId& astNodeId_);
@@ -201,11 +208,35 @@ private:
       = odb::query<model::GoAstNode>(true));
 
   /**
+   * This function returns the function calls in a given function.
+   * @param astNodeId_ An AST node ID which belongs to a function.
+   */
+  std::vector<model::GoAstNode> queryCalls(const core::AstNodeId& astNodeId_);
+
+  /**
+   * This function returns the number of function calls in a given function.
+   * @param astNodeId_ An AST node ID which belongs to a function.
+   */
+  std::size_t queryCallsCount(
+    const core::AstNodeId& astNodeId_);
+
+  /**
+   * This function returns an AST query to get the function calls in the given
+   * function.
+   */
+  odb::query<model::GoAstNode> astCallsQuery(
+    const model::GoAstNode& astNode_);
+
+  /**
    * This function returns meta information of the AST nodes
    * (e.g. public, static, virtual etc.)
    */
   std::map<model::GoAstNodeId, std::vector<std::string>> getTags(
     const std::vector<model::GoAstNode>& nodes_);
+
+  util::Graph returnDiagram(
+    const core::AstNodeId& astNodeId_,
+    const std::int32_t diagramId_);
 
   std::shared_ptr<odb::database> _db;
   std::shared_ptr<std::string> _datadir;

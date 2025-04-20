@@ -13,6 +13,7 @@ include_directories(SYSTEM
 
 add_library(goservice SHARED
   src/goservice.cpp
+  src/diagram.cpp
   src/plugin.cpp)
 
 target_compile_options(goservice PUBLIC -Wno-unknown-pragmas)
