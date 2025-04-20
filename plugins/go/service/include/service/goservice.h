@@ -103,7 +103,110 @@ public:
 
   void getSyntaxHighlight(std::vector<SyntaxHighlight> & _return, const core::FileRange& range);
 
+  enum ReferenceType
+  {
+    DEFINITION, /*!< By this option the definition(s) of the AST node can be
+      queried. However according to the "one definition rule" a named entity
+      can have only one definition, in a parsing several definitions might be
+      available. This is the case when the project is built for several targets
+      and in the different builds different definitions are defined for an
+      entity (e.g. because of an #ifdef section). */
+
+    USAGE, /*!< By this option the usages of the AST node can be queried, i.e.
+      the nodes of which the entity hash is identical to the queried one. */
+
+    THIS_CALLS, /*!< Get function calls in a function. WARNING: If the
+      definition of the AST node is not unique then it returns the callees of
+      one of them. */
+
+    CALLS_OF_THIS, /*!< Get calls of a function. */
+
+    CALLEE, /*!< Get called functions definitions. WARNING: If the definition of
+      the AST node is not unique then it returns the callees of one of them. */
+
+    CALLER, /*!< Get caller functions. */
+
+    VIRTUAL_CALL, /*!< A function may be used virtually on a base type object.
+      The exact type of the object is based on dynamic information, which can't
+      be determined statically. Weak usage returns these possible calls. */
+
+    FUNC_PTR_CALL, /*!< Functions can be assigned to function pointers which
+      can be invoked later. This option returns these invocations. */
+
+    PARAMETER, /*!< This option returns the parameters of a function. */
+
+    LOCAL_VAR, /*!< This option returns the local variables of a function. */
+
+    RETURN_TYPE, /*!< This option returns the return type of a function. */
+
+    OVERRIDE, /*!< This option returns the functions which the given function
+      overrides. */
+
+    OVERRIDDEN_BY, /*!< This option returns the overrides of a function. */
+
+    READ, /*!< This option returns the places where a variable is read. */
+
+    WRITE, /*!< This option returns the places where a variable is written. */
+
+    TYPE, /*!< This option returns the type of a variable. */
+
+    ALIAS, /*!< Types may have aliases, e.g. by typedefs. */
+
+    INHERIT_FROM, /*!< Types from which the queried type inherits. */
+
+    INHERIT_BY, /*!< Types by which the queried type is inherited. */
+
+    DATA_MEMBER, /*!< Data members of a class. */
+
+    METHOD, /*!< Members of a class. */
+
+    FRIEND, /*!< The friends of a class. */
+
+    UNDERLYING_TYPE, /*!< Underlying type of a typedef. */
+
+    ENUM_CONSTANTS, /*!< Enum constants. */
+
+    EXPANSION, /*!< Macro expansion. */
+
+    UNDEFINITION, /*!< Macro undefinition. */
+  };
+
 private:
+  std::vector<model::GoAstNode> queryDefinitions(
+    const core::AstNodeId& astNodeId_);
+
+  /**
+   * This function returns the corresponding model::GoAstNode to the given AST
+   * node.
+   */
+  model::GoAstNode queryGoAstNode(const core::AstNodeId& astNodeId_);
+
+  /**
+   * This function returns the model::GoAstNode objects which meet the
+   * requirements of the given query and have the same entity hash as the given
+   * AST node.
+   */
+  std::vector<model::GoAstNode> queryGoAstNodes(
+    const core::AstNodeId& astNodeId_,
+    const odb::query<model::GoAstNode>& query_
+      = odb::query<model::GoAstNode>(true));
+
+  /*
+   * This function returns the number of corresponding model::GoAstNode objects
+   * to the given AST which meet the given query condition.
+   */
+  std::size_t queryGoAstNodeCount(
+    const core::AstNodeId& astNodeId_,
+    const odb::query<model::GoAstNode>& query_
+      = odb::query<model::GoAstNode>(true));
+
+  /**
+   * This function returns meta information of the AST nodes
+   * (e.g. public, static, virtual etc.)
+   */
+  std::map<model::GoAstNodeId, std::vector<std::string>> getTags(
+    const std::vector<model::GoAstNode>& nodes_);
+
   std::shared_ptr<odb::database> _db;
   std::shared_ptr<std::string> _datadir;
   util::OdbTransaction _transaction;

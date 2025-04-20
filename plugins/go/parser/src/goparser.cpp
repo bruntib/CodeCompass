@@ -109,7 +109,7 @@ namespace cc
         jsonFiles.push_back(jsonPath);
         return true;
       }
-      
+
       return false; });
       }
 
@@ -434,7 +434,7 @@ namespace cc
           if (it != structs.end())
           {
             //relationship in both directions maybe in the future
-            
+
           }
         }
       }
@@ -444,39 +444,39 @@ namespace cc
       transaction([&]
                   {
     _ctx.srcMgr.persistFiles();
-    
+
     for (const auto& node : astNodes)
       _ctx.db->persist(*node);
-      
+
     for (const auto& pkg : packages)
       _ctx.db->persist(*pkg);
-      
+
     for (const auto& import : imports)
       _ctx.db->persist(*import);
-      
+
     for (const auto& var : variables)
       _ctx.db->persist(*var);
-      
+
     for (const auto& func : functions)
       _ctx.db->persist(*func);
       for (const auto& constant : constants)
       _ctx.db->persist(*constant);
-      
+
     for (const auto& method : methods)
       _ctx.db->persist(*method);
-      
+
     for (const auto& statement : statements)
       _ctx.db->persist(*statement);
-      
+
     for (const auto& goType : types)
       _ctx.db->persist(*goType);
-      
+
     for (const auto& enum_ : enums)
       _ctx.db->persist(*enum_);
-      
+
     for (const auto& interface_ : interfaces)
       _ctx.db->persist(*interface_);
-      
+
     for (const auto& struct_ : structs)
       _ctx.db->persist(*struct_); });
 
@@ -532,7 +532,7 @@ namespace cc
       }
 
       // Calculate entity hash based on position, name, etc.
-      astNode->entityHash = model::createIdentifier(*astNode);
+      astNode->entityHash = createEntityHash(*astNode);
 
       // Generate unique ID
       astNode->id = model::createIdentifier(*astNode);
@@ -768,7 +768,7 @@ namespace cc
       enum_->type = node.get<std::string>("Type", "int");
 
       // Process enum constants
-     
+
 
       return enum_;
     }
@@ -915,6 +915,17 @@ namespace cc
       field->endColumn = node.get<int>("EndColumn", 0);
 
       return field;
+    }
+
+    std::uint64_t GoParser::createEntityHash(const model::GoAstNode& astNode_)
+    {
+      std::string res;
+
+      res
+        .append(astNode_.name).append(":")
+        .append(astNode_.package).append(":");
+
+      return util::fnvHash(res);
     }
 
     GoParser::~GoParser()

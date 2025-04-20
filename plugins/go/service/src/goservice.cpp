@@ -106,19 +106,70 @@ void GoServiceHandler::getFileTypes(std::vector<std::string>& return_)
   return_.push_back("Dir");
 }
 
-void GoServiceHandler::getAstNodeInfo(AstNodeInfo& _return, const core::AstNodeId& astNodeId)
+void GoServiceHandler::getAstNodeInfo(
+  AstNodeInfo& return_,
+  const core::AstNodeId& astNodeId_)
 {
-
+  return_ = _transaction([this, &astNodeId_]() {
+    return CreateAstNodeInfo()(queryGoAstNode(astNodeId_));
+  });
 }
 
-void GoServiceHandler::getAstNodeInfoByPosition(AstNodeInfo& _return, const core::FilePosition& fpos)
+void GoServiceHandler::getAstNodeInfoByPosition(
+  AstNodeInfo& return_,
+  const core::FilePosition& fpos_)
 {
+  _transaction([&, this](){
+    //--- Query nodes at the given position ---//
 
+    AstResult nodes = _db->query<model::GoAstNode>(
+      AstQuery::location.file == std::stoull(fpos_.file) &&
+      // StartPos <= Pos
+      ((AstQuery::location.range.start.line == fpos_.pos.line &&
+        AstQuery::location.range.start.column <= fpos_.pos.column) ||
+       AstQuery::location.range.start.line < fpos_.pos.line) &&
+      // Pos < EndPos
+      ((AstQuery::location.range.end.line == fpos_.pos.line &&
+        AstQuery::location.range.end.column > fpos_.pos.column) ||
+       AstQuery::location.range.end.line > fpos_.pos.line));
+
+    //--- Select innermost clickable node ---//
+
+    model::Range minRange(model::Position(0, 0), model::Position());
+    model::GoAstNode min;
+
+    for (const model::GoAstNode& node : nodes)
+    {
+      if (node.location.range < minRange)
+      {
+        min = node;
+        minRange = node.location.range;
+      }
+    }
+
+    return_ = _transaction([this, &min](){
+      return CreateAstNodeInfo(getTags({min}))(min);
+    });
+  });
 }
 
-void GoServiceHandler::getSourceText(std::string& _return, const core::AstNodeId& astNodeId)
+void GoServiceHandler::getSourceText(
+  std::string& return_,
+  const core::AstNodeId& astNodeId_)
 {
+  return_ = _transaction([this, &astNodeId_](){
+    model::GoAstNode astNode = queryGoAstNode(astNodeId_);
 
+    if (astNode.location.file)
+      return cc::util::textRange(
+        astNode.location.file.load()->content.load()->content,
+        astNode.location.range.start.line,
+        astNode.location.range.start.column,
+        astNode.location.range.end.line,
+        astNode.location.range.end.column);
+
+    return std::string();
+  });
 }
 
 void GoServiceHandler::getDocumentation(std::string& _return, const core::AstNodeId& astNodeId)
@@ -161,19 +212,66 @@ void GoServiceHandler::getFileDiagramLegend(std::string& _return, const int32_t 
 
 }
 
-void GoServiceHandler::getReferenceTypes(std::map<std::string, int32_t> & _return, const core::AstNodeId& astNodeId)
+void GoServiceHandler::getReferenceTypes(
+  std::map<std::string, int32_t>& return_,
+  const core::AstNodeId& astNodeId_)
 {
+  model::GoAstNode node = queryGoAstNode(astNodeId_);
 
+  return_["Definition"] = DEFINITION;
+  return_["Usage"] = USAGE;
 }
 
-int32_t GoServiceHandler::getReferenceCount(const core::AstNodeId& astNodeId, const int32_t referenceId)
+int32_t GoServiceHandler::getReferenceCount(
+  const core::AstNodeId& astNodeId_,
+  const int32_t referenceId_)
 {
+  model::GoAstNode node = queryGoAstNode(astNodeId_);
 
+  return _transaction([&, this]() -> std::int32_t {
+    switch (referenceId_)
+    {
+      case DEFINITION:
+        return queryGoAstNodeCount(astNodeId_,
+          AstQuery::symbolType == model::GoAstNode::SymbolType::Function ||
+          AstQuery::symbolType == model::GoAstNode::SymbolType::Package ||
+          AstQuery::symbolType == model::GoAstNode::SymbolType::Type ||
+          AstQuery::symbolType == model::GoAstNode::SymbolType::Variable);
+
+      case USAGE:
+        return queryGoAstNodeCount(astNodeId_);
+    }
+  });
 }
 
-void GoServiceHandler::getReferences(std::vector<AstNodeInfo> & _return, const core::AstNodeId& astNodeId, const int32_t referenceId, const std::vector<std::string> & tags)
+void GoServiceHandler::getReferences(
+  std::vector<AstNodeInfo>& return_,
+  const core::AstNodeId& astNodeId_,
+  const int32_t referenceId_,
+  const std::vector<std::string>& tags_)
 {
+  std::vector<model::GoAstNode> nodes;
 
+  _transaction([&, this](){
+    switch (referenceId_)
+    {
+      case DEFINITION:
+        nodes = queryDefinitions(astNodeId_);
+        break;
+
+      case USAGE:
+        nodes = queryGoAstNodes(astNodeId_);
+        break;
+    }
+
+    return_.reserve(nodes.size());
+    _transaction([this, &return_, &nodes](){
+      std::transform(
+        nodes.begin(), nodes.end(),
+        std::back_inserter(return_),
+        CreateAstNodeInfo(getTags(nodes)));
+    });
+  });
 }
 
 void GoServiceHandler::getReferencesInFile(std::vector<AstNodeInfo> & _return, const core::AstNodeId& astNodeId, const int32_t referenceId, const core::FileId& fileId, const std::vector<std::string> & tags)
@@ -204,6 +302,76 @@ int32_t GoServiceHandler::getFileReferenceCount(const core::FileId& fileId, cons
 void GoServiceHandler::getSyntaxHighlight(std::vector<SyntaxHighlight> & _return, const core::FileRange& range)
 {
 
+}
+
+std::vector<model::GoAstNode> GoServiceHandler::queryDefinitions(
+  const core::AstNodeId& astNodeId_)
+{
+  return queryGoAstNodes(
+    astNodeId_,
+    AstQuery::symbolType == model::GoAstNode::SymbolType::Function ||
+    AstQuery::symbolType == model::GoAstNode::SymbolType::Package ||
+    AstQuery::symbolType == model::GoAstNode::SymbolType::Type ||
+    AstQuery::symbolType == model::GoAstNode::SymbolType::Variable);
+}
+
+model::GoAstNode GoServiceHandler::queryGoAstNode(
+  const core::AstNodeId& astNodeId_)
+{
+  return _transaction([&, this]() {
+    model::GoAstNode node;
+
+    if (!_db->find(std::stoull(astNodeId_), node))
+    {
+      core::InvalidId ex;
+      ex.__set_msg("Invalid GoAstNode ID");
+      ex.__set_nodeid(astNodeId_);
+      throw ex;
+    }
+
+    return node;
+  });
+}
+
+std::vector<model::GoAstNode> GoServiceHandler::queryGoAstNodes(
+  const core::AstNodeId& astNodeId_,
+  const AstQuery& query_)
+{
+  model::GoAstNode node = queryGoAstNode(astNodeId_);
+
+  AstResult result = _db->query<model::GoAstNode>(
+    AstQuery::entityHash == node.entityHash &&
+    AstQuery::location.range.end.line != model::Position::npos &&
+    query_);
+
+  return std::vector<model::GoAstNode>(result.begin(), result.end());
+}
+
+std::size_t GoServiceHandler::queryGoAstNodeCount(
+  const core::AstNodeId& astNodeId_,
+  const AstQuery& query_)
+{
+  model::GoAstNode node = queryGoAstNode(astNodeId_);
+
+  model::GoAstCount q = _db->query_value<model::GoAstCount>(
+    AstQuery::entityHash == node.entityHash &&
+    AstQuery::location.range.end.line != model::Position::npos &&
+    query_);
+
+  return q.count;
+}
+
+std::map<model::GoAstNodeId, std::vector<std::string>>
+GoServiceHandler::getTags(const std::vector<model::GoAstNode>& nodes_)
+{
+  std::map<model::GoAstNodeId, std::vector<std::string>> tags;
+
+  for (const model::GoAstNode& node : nodes_)
+  {
+    tags[node.id];
+  }
+
+  return tags;
 }
 
 } // language

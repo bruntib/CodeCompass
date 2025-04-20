@@ -80,7 +80,7 @@ namespace cc
             model::GoInterfacePtr createInterface(
                 const boost::property_tree::ptree &node,
                 model::GoAstNodePtr astNode);
-                
+
             model::GoStructPtr createStruct(
                 const boost::property_tree::ptree &node,
                 model::GoAstNodePtr astNode);
@@ -96,6 +96,9 @@ namespace cc
             model::GoStructFieldPtr createStructField(
                 const boost::property_tree::ptree &node,
                 std::uint64_t structId);
+
+            std::uint64_t createEntityHash(
+                const model::GoAstNode& astNode_);
 
             const std::string _goSourceType;
         };
